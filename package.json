@@ -1,0 +1,40 @@
+{
+  "name": "calldiff",
+  "version": "0.1.0",
+  "description": "Diff TypeScript call stacks across git commits",
+  "type": "module",
+  "bin": {
+    "calldiff": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "test": "tsx --test test/**/*.test.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "callgraph",
+    "diff",
+    "typescript",
+    "oxc",
+    "git"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "oxc-parser": "^0.143.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@oxc-project/types": "^0.143.0",
+    "@types/node": "^24.2.0",
+    "outdent": "^0.8.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}
