@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "test": "tsx --test test/**/*.test.ts"
@@ -18,13 +19,23 @@
   "engines": {
     "node": ">=20"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tanishqkancharla/calldiff.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tanishqkancharla/calldiff/issues"
+  },
+  "homepage": "https://github.com/tanishqkancharla/calldiff#readme",
   "keywords": [
     "callgraph",
     "diff",
     "typescript",
     "oxc",
-    "git"
+    "git",
+    "callstack"
   ],
+  "author": "Tanishq Kancharla",
   "license": "MIT",
   "dependencies": {
     "oxc-parser": "^0.143.0",
@@ -33,7 +44,6 @@
   "devDependencies": {
     "@oxc-project/types": "^0.143.0",
     "@types/node": "^24.2.0",
-    "outdent": "^0.8.0",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2"
   }

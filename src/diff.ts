@@ -13,6 +13,7 @@ function diffNode(before: CallNode | null, after: CallNode | null): DiffNode {
     return {
       key: after.key,
       label: after.label,
+      kind: after.kind ?? before.kind,
       status: "same",
       children: diffChildren(before.children, after.children),
     };
@@ -22,6 +23,7 @@ function diffNode(before: CallNode | null, after: CallNode | null): DiffNode {
     return {
       key: after.key,
       label: after.label,
+      kind: after.kind,
       status: "added",
       children: after.children.map(markTree("added")),
     };
@@ -31,6 +33,7 @@ function diffNode(before: CallNode | null, after: CallNode | null): DiffNode {
     return {
       key: before.key,
       label: before.label,
+      kind: before.kind,
       status: "removed",
       children: before.children.map(markTree("removed")),
     };
@@ -44,6 +47,7 @@ function markTree(status: "added" | "removed") {
     return {
       key: node.key,
       label: node.label,
+      kind: node.kind,
       status,
       children: node.children.map(mark),
     };

@@ -90,58 +90,26 @@ function condText(source: string, test: AnyNode): string {
   return collapseWs(source.slice(Number(test.start), Number(test.end)));
 }
 
-/** Label like `if (!options.sessionId) {` from source when possible. */
+/** Label like `if (!options.sessionId)` from the condition text. */
 function ifOpenLabel(source: string, ifNode: AnyNode): string {
   const test = isNode(ifNode.test) ? ifNode.test : null;
-  const consequent = isNode(ifNode.consequent) ? ifNode.consequent : null;
-  if (test && consequent?.type === "BlockStatement") {
-    return collapseWs(
-      source.slice(Number(ifNode.start), Number(consequent.start) + 1),
-    );
-  }
   if (test) {
-    return `if (${condText(source, test)}) {`;
+    return `if (${condText(source, test)})`;
   }
-  return "if {";
+  return "if";
 }
 
-/** Label like `} else {` or `} else if (x) {` from source when possible. */
+/** Label like `else` or `else if (x)`. */
 function elseOpenLabel(
-  source: string,
-  consequent: AnyNode,
+  _source: string,
+  _consequent: AnyNode,
   alternate: AnyNode,
 ): string {
   if (alternate.type === "IfStatement") {
-    const innerConsequent = isNode(alternate.consequent)
-      ? alternate.consequent
-      : null;
-    if (
-      consequent.type === "BlockStatement" &&
-      innerConsequent?.type === "BlockStatement"
-    ) {
-      return collapseWs(
-        source.slice(
-          Number(consequent.end) - 1,
-          Number(innerConsequent.start) + 1,
-        ),
-      );
-    }
     const test = isNode(alternate.test) ? alternate.test : null;
-    return test
-      ? `} else if (${condText(source, test)}) {`
-      : "} else if {";
+    return test ? `else if (${condText(_source, test)})` : "else if";
   }
-
-  if (
-    consequent.type === "BlockStatement" &&
-    alternate.type === "BlockStatement"
-  ) {
-    return collapseWs(
-      source.slice(Number(consequent.end) - 1, Number(alternate.start) + 1),
-    );
-  }
-
-  return "} else {";
+  return "else";
 }
 
 function branchKey(kind: "if" | "else-if" | "else", cond: string): string {

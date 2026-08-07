@@ -1,8 +1,12 @@
+export type CallNodeKind = "call" | "branch";
+
 export interface CallNode {
   /** Stable identity used for matching across versions, e.g. "PiService.createAgentSession" */
   key: string;
-  /** Display label, e.g. "PiService.createAgentSession" or "if (!options.sessionId) {" */
+  /** Display label, e.g. "PiService.createAgentSession" or "if (!options.sessionId)" */
   label: string;
+  /** Branches omit the continuing │ rail so arms read as alternate paths */
+  kind?: CallNodeKind;
   children: CallNode[];
 }
 
@@ -22,6 +26,7 @@ export interface DiffNode {
   key: string;
   label: string;
   status: DiffStatus;
+  kind?: CallNodeKind;
   children: DiffNode[];
 }
 

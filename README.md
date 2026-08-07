@@ -16,9 +16,9 @@ Diff TypeScript call stacks across git commits — like `git diff`, but for who-
 ## Install
 
 ```bash
-npm install
-npm run build
-npm link   # optional: expose `calldiff` on your PATH
+npx calldiff
+# or
+npm install -g calldiff
 ```
 
 ## Usage
@@ -58,7 +58,7 @@ calldiff main feature -- src/lib
 - `functionName` — free function
 - `ClassName.method` — class method
 - `new ClassName` — constructor / `new` call
-- `if (cond) {` / `} else {` — conditional branches (source text)
+- `if (cond)` / `else` / `else if (cond)` — conditional arms (no continuing `│` rail)
 
 If you omit `--entry`, calldiff infers exported functions whose expanded call trees changed (and may show several).
 

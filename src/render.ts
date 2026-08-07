@@ -66,9 +66,11 @@ export function renderDiff(
     const line = `${statusPrefix(node.status)} ${indent}${branch}${paintStatus(node.status, node.label)}`;
     lines.push(line);
 
-    const childIndent = isRoot
-      ? ""
-      : `${indent}${isLast ? "   " : "│  "}`;
+    // Conditional arms omit the continuing │ rail — they are alternate paths,
+    // not a nested stack that continues past the branch.
+    const rail =
+      node.kind === "branch" ? "   " : isLast || isRoot ? "   " : "│  ";
+    const childIndent = isRoot ? "" : `${indent}${rail}`;
 
     node.children.forEach((child, index) => {
       walk(

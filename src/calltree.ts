@@ -19,6 +19,7 @@ function expandSteps(
       return {
         key: step.key,
         label: step.label,
+        kind: "branch" as const,
         children: expandSteps(
           step.children,
           index,
@@ -42,16 +43,16 @@ function expandCall(
   const label = displayCallLabel(key, index);
 
   if (depth >= maxDepth) {
-    return { key, label, children: [] };
+    return { key, label, kind: "call", children: [] };
   }
 
   const info = index.get(key);
   if (!info) {
-    return { key, label, children: [] };
+    return { key, label, kind: "call", children: [] };
   }
 
   if (visiting.has(key)) {
-    return { key, label: `${label} ⇄`, children: [] };
+    return { key, label: `${label} ⇄`, kind: "call", children: [] };
   }
 
   visiting.add(key);
@@ -64,7 +65,7 @@ function expandCall(
   );
   visiting.delete(key);
 
-  return { key, label, children };
+  return { key, label, kind: "call", children };
 }
 
 /**
