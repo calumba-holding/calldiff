@@ -4,7 +4,7 @@
   "description": "Diff call stacks across git commits for agentic code review (22 languages)",
   "type": "module",
   "bin": {
-    "calldiff": "./dist/cli.js"
+    "calldiff": "dist/cli.js"
   },
   "files": [
     "dist"
