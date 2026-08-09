@@ -36,12 +36,103 @@ export function resolveSnapshots(
   return { from: left, to: right };
 }
 
-/** Single snapshot for `calldiff show` — no ref → working tree. */
+function isCommitRef(cwd: string, ref: string): boolean {
+  try {
+    git(cwd, ["rev-parse", "--verify", `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPathOnDisk(cwd: string, value: string): boolean {
+  return existsSync(resolve(cwd, value));
+}
+
+/**
+ * Resolve diff from/to/paths with git-diff defaults, treating on-disk path
+ * positionals as path filters when they are not valid git refs.
+ *
+ * Examples:
+ * - `diff main src` → main vs worktree, paths=[src]
+ * - `diff main feature src` → main vs feature, paths=[src]
+ * - `diff src` → HEAD vs worktree, paths=[src]
+ */
+export function resolveDiffSnapshotsAndPaths(
+  cwd: string,
+  from: string | undefined,
+  to: string | undefined,
+  paths: string[],
+): { from: Snapshot; to: Snapshot; paths: string[] } {
+  if (from === undefined && to === undefined) {
+    return { ...resolveSnapshots(undefined, undefined), paths };
+  }
+
+  if (from !== undefined && to === undefined) {
+    if (isCommitRef(cwd, from)) {
+      return { ...resolveSnapshots(from, undefined), paths };
+    }
+    if (isPathOnDisk(cwd, from)) {
+      return { ...resolveSnapshots(undefined, undefined), paths: [from, ...paths] };
+    }
+    throw new Error(`Unknown git ref: ${from}`);
+  }
+
+  if (from !== undefined && to !== undefined) {
+    if (!isCommitRef(cwd, from)) {
+      throw new Error(`Unknown git ref: ${from}`);
+    }
+    if (isCommitRef(cwd, to)) {
+      return { ...resolveSnapshots(from, to), paths };
+    }
+    if (isPathOnDisk(cwd, to)) {
+      return {
+        ...resolveSnapshots(from, undefined),
+        paths: [to, ...paths],
+      };
+    }
+    throw new Error(`Unknown git ref: ${to}`);
+  }
+
+  // to without from shouldn't happen via CLI positionals, but honor options.
+  return { ...resolveSnapshots(from, to), paths };
+}
+
+/** Single snapshot for `calldiff tree` / `reach` — no ref → working tree. */
 export function resolveSnapshot(ref: string | undefined): Snapshot {
   if (ref === undefined) {
     return { kind: "worktree", ref: "WORKTREE" };
   }
   return { kind: "commit", ref };
+}
+
+/**
+ * Resolve optional ref + path filters for tree/reach.
+ * A lone positional that isn't a git ref but exists on disk is treated as a
+ * path filter on the working tree (`calldiff tree -e foo src/lib`).
+ */
+export function resolveSnapshotAndPaths(
+  cwd: string,
+  ref: string | undefined,
+  paths: string[],
+): { snapshot: Snapshot; paths: string[] } {
+  if (ref === undefined) {
+    return { snapshot: resolveSnapshot(undefined), paths };
+  }
+
+  try {
+    git(cwd, ["rev-parse", "--verify", `${ref}^{commit}`]);
+    return { snapshot: resolveSnapshot(ref), paths };
+  } catch {
+    const abs = resolve(cwd, ref);
+    if (existsSync(abs)) {
+      return {
+        snapshot: resolveSnapshot(undefined),
+        paths: [ref, ...paths],
+      };
+    }
+    throw new Error(`Unknown git ref: ${ref}`);
+  }
 }
 
 export function verifyCommit(cwd: string, ref: string): void {

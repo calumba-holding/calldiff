@@ -54,7 +54,7 @@ export interface Snapshot {
   ref: string;
 }
 
-export type CliMode = "diff" | "show";
+export type CliMode = "diff" | "tree" | "reach";
 
 export interface DiffTreeResult {
   entry: string;
@@ -73,17 +73,34 @@ export interface DiffResult {
   ascii: string;
 }
 
-export interface ShowTreeResult {
+export interface TreeEntryResult {
   entry: string;
   /** Colorless ASCII rendering of this entry's call tree. */
   ascii: string;
   tree: CallNode;
 }
 
-export interface ShowResult {
-  mode: "show";
+export interface TreeResult {
+  mode: "tree";
   ref: string;
-  trees: ShowTreeResult[];
+  trees: TreeEntryResult[];
+  /** Full human-oriented ASCII output (may include ANSI colors). */
+  ascii: string;
+}
+
+export interface ReachPathResult {
+  /** Colorless ASCII rendering of this path. */
+  ascii: string;
+  tree: CallNode;
+}
+
+export interface ReachResult {
+  mode: "reach";
+  ref: string;
+  from: string;
+  to: string;
+  message?: string;
+  paths: ReachPathResult[];
   /** Full human-oriented ASCII output (may include ANSI colors). */
   ascii: string;
 }

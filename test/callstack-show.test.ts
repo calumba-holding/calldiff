@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { callstackShow } from "./helpers.js";
 
-describe("callstack show", () => {
+describe("callstack tree", () => {
   test("renders a plain call tree without +/- markers", () => {
     const actual = callstackShow(
       `

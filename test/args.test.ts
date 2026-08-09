@@ -27,8 +27,8 @@ describe("normalizeArgv", () => {
   });
 
   test("leaves other tokens alone", () => {
-    expect(normalizeArgv(["show", "-e", "boot"])).toEqual([
-      "show",
+    expect(normalizeArgv(["tree", "-e", "boot"])).toEqual([
+      "tree",
       "-e",
       "boot",
     ]);
@@ -36,26 +36,33 @@ describe("normalizeArgv", () => {
 });
 
 describe("calldiff CLI (incur)", () => {
-  test("--help exits successfully and mentions show", async () => {
+  test("--help exits successfully and mentions subcommands", async () => {
     const { stdout, code } = await invoke(["--help"]);
     expect(code === undefined || code === 0).toBe(true);
     expect(stdout).toMatch(/calldiff/);
-    expect(stdout).toMatch(/show/);
-    expect(stdout).toMatch(/--entry/);
+    expect(stdout).toMatch(/diff/);
+    expect(stdout).toMatch(/tree/);
+    expect(stdout).toMatch(/reach/);
   });
 
   test("--llms prints agent manifest", async () => {
     const { stdout, code } = await invoke(["--llms"]);
     expect(code === undefined || code === 0).toBe(true);
     expect(stdout).toMatch(/calldiff/);
-    expect(stdout).toMatch(/show/);
+    expect(stdout).toMatch(/tree/);
+    expect(stdout).toMatch(/reach/);
   });
 
-  test("show without --entry fails", async () => {
-    const { stdout, code } = await invoke(["show"]);
+  test("tree without --entry fails", async () => {
+    const { code } = await invoke(["tree"]);
     expect(code).toBeTruthy();
     expect(code).toBeGreaterThan(0);
-    expect(stdout.length + code!).toBeGreaterThan(0);
+  });
+
+  test("reach without --to fails", async () => {
+    const { code } = await invoke(["reach", "-e", "boot"]);
+    expect(code).toBeTruthy();
+    expect(code).toBeGreaterThan(0);
   });
 
   test("unknown flag fails", async () => {
