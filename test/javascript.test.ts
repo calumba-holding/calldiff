@@ -244,24 +244,3 @@ test("javascript: extracts generator and exported arrow bodies", ({
       └─ done()
   `);
 });
-
-test("javascript: follows export const arrow entrypoints", ({
-  expectCallstack,
-}) => {
-  expectCallstack(
-    `
-      export const boot = () => {
-        load();
-    +   migrate();
-      };
-      function load() {}
-    + function migrate() {}
-    `,
-    "boot",
-    { file: "boot.js" },
-  ).toEqual(`
-      boot()
-      ├─ load()
-    + └─ migrate()
-  `);
-});

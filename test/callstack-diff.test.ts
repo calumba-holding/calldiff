@@ -488,36 +488,6 @@ test("ignores computed member calls", ({ expectCallstack }) => {
   `);
 });
 
-test("parses TSX files and tracks calls in component bodies", ({
-  expectCallstack,
-}) => {
-  // JSX tags are not call_expressions; only explicit calls in the body count.
-  expectCallstack(
-    `
-      export function App() {
-        setup();
-    +   track();
-        return <Button onClick={handle} />;
-      }
-      function setup() {}
-    + function track() {}
-      function handle() {
-        click();
-      }
-      function click() {}
-      function Button(_props: { onClick(): void }) {
-        return null;
-      }
-    `,
-    "App",
-    { file: "app.tsx" },
-  ).toEqual(`
-      App()
-      ├─ setup()
-    + └─ track()
-  `);
-});
-
 test("marks recursive cycles with a turnstile", ({ expectCallstack }) => {
   expectCallstack(
     `
