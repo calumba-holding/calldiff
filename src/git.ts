@@ -1,15 +1,25 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { listSupportedExtensions } from "./languages/registry.js";
 import type { Snapshot } from "./types.js";
 
-function git(cwd: string, args: string[]): string {
+function gitBuffer(
+  cwd: string,
+  args: string[],
+  input?: Buffer,
+  maxBuffer = 64 * 1024 * 1024,
+): Buffer {
   return execFileSync("git", args, {
     cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
+    input,
+    maxBuffer,
+    stdio: ["pipe", "pipe", "pipe"],
   });
+}
+
+function git(cwd: string, args: string[]): string {
+  return gitBuffer(cwd, args).toString("utf8");
 }
 
 export function assertGitRepo(cwd: string): void {
@@ -143,19 +153,7 @@ export function verifyCommit(cwd: string, ref: string): void {
   }
 }
 
-import { listSupportedExtensions } from "./languages/registry.js";
-
 const SOURCE_EXT = new Set(listSupportedExtensions());
-const SKIP_DIRS = new Set([
-  "node_modules",
-  "dist",
-  "build",
-  "coverage",
-  ".git",
-  ".next",
-  ".turbo",
-  "out",
-]);
 
 function isSourceFile(path: string): boolean {
   const lower = path.toLowerCase();
@@ -165,34 +163,68 @@ function isSourceFile(path: string): boolean {
   return SOURCE_EXT.has(lower.slice(dot));
 }
 
-function walkWorktree(root: string, dir: string, out: string[]): void {
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
+export interface SnapshotFile {
+  path: string;
+  /** Git blob metadata. Worktree files do not have it. */
+  oid?: string;
+  size?: number;
+}
 
-  for (const entry of entries) {
-    if (entry.name.startsWith(".") && entry.name !== ".") continue;
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      walkWorktree(root, full, out);
-      continue;
-    }
-    if (entry.isFile() && isSourceFile(entry.name)) {
-      out.push(relative(root, full).split(sep).join("/"));
-    }
+function isRegularFile(path: string): boolean {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
   }
 }
 
-function listCommitSourceFiles(cwd: string, ref: string): string[] {
-  const output = git(cwd, ["ls-tree", "-r", "--name-only", ref]);
+function listWorktreeFiles(cwd: string): SnapshotFile[] {
+  const output = git(cwd, [
+    "ls-files",
+    "-z",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+  ]);
+
   return output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line && isSourceFile(line));
+    .split("\0")
+    .filter(
+      (path) =>
+        path && isSourceFile(path) && isRegularFile(resolve(cwd, path)),
+    )
+    .map((path) => ({ path }));
+}
+
+function listCommitFiles(cwd: string, ref: string): SnapshotFile[] {
+  const output = git(cwd, ["ls-tree", "-r", "-z", "-l", ref]);
+  const files: SnapshotFile[] = [];
+
+  for (const record of output.split("\0")) {
+    if (!record) continue;
+
+    const tab = record.indexOf("\t");
+    if (tab < 0) continue;
+
+    const [mode, type, oid, sizeText] = record
+      .slice(0, tab)
+      .trim()
+      .split(/\s+/);
+    const path = record.slice(tab + 1);
+    const regular = mode === "100644" || mode === "100755";
+    const size = Number(sizeText);
+    if (
+      regular &&
+      type === "blob" &&
+      oid &&
+      Number.isInteger(size) &&
+      isSourceFile(path)
+    ) {
+      files.push({ path, oid, size });
+    }
+  }
+
+  return files;
 }
 
 function pathAllowed(file: string, pathFilters: string[]): boolean {
@@ -205,6 +237,21 @@ function pathAllowed(file: string, pathFilters: string[]): boolean {
       file.endsWith(normalized)
     );
   });
+}
+
+export function listSnapshotFiles(
+  cwd: string,
+  snapshot: Snapshot,
+  pathFilters: string[] = [],
+): SnapshotFile[] {
+  const files =
+    snapshot.kind === "worktree"
+      ? listWorktreeFiles(cwd)
+      : listCommitFiles(cwd, snapshot.ref);
+
+  return files
+    .filter((file) => pathAllowed(file.path, pathFilters))
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /** @deprecated Use listSourceFiles */
@@ -221,34 +268,120 @@ export function listSourceFiles(
   snapshot: Snapshot,
   pathFilters: string[] = [],
 ): string[] {
-  const files =
-    snapshot.kind === "worktree"
-      ? (() => {
-          const out: string[] = [];
-          walkWorktree(cwd, cwd, out);
-          return out;
-        })()
-      : listCommitSourceFiles(cwd, snapshot.ref);
-
-  return files.filter((file) => pathAllowed(file, pathFilters)).sort();
+  return listSnapshotFiles(cwd, snapshot, pathFilters).map((file) => file.path);
 }
 
-export function readSnapshotFile(
-  cwd: string,
-  snapshot: Snapshot,
-  file: string,
-): string | null {
-  if (snapshot.kind === "worktree") {
-    const full = resolve(cwd, file);
-    if (!existsSync(full) || !statSync(full).isFile()) return null;
-    return readFileSync(full, "utf8");
+const BATCH_BYTES = 32 * 1024 * 1024;
+
+type Blob = { oid: string; size: number };
+
+function chunkBlobs(files: SnapshotFile[]): Blob[][] {
+  const unique = new Map<string, number>();
+  for (const file of files) {
+    if (file.oid && file.size !== undefined && !unique.has(file.oid)) {
+      unique.set(file.oid, file.size);
+    }
   }
 
-  try {
-    return git(cwd, ["show", `${snapshot.ref}:${file}`]);
-  } catch {
-    return null;
+  const chunks: Blob[][] = [];
+  let chunk: Blob[] = [];
+  let bytes = 0;
+  for (const [oid, size] of unique) {
+    if (chunk.length > 0 && bytes + size > BATCH_BYTES) {
+      chunks.push(chunk);
+      chunk = [];
+      bytes = 0;
+    }
+    chunk.push({ oid, size });
+    bytes += size;
   }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+
+function readBlobBatch(cwd: string, batch: Blob[]): Map<string, string> {
+  const input = Buffer.from(`${batch.map((blob) => blob.oid).join("\n")}\n`);
+  const bytes = batch.reduce((total, blob) => total + blob.size, 0);
+  const maxBuffer = bytes + batch.length * 128 + 1024;
+  const output = gitBuffer(cwd, ["cat-file", "--batch"], input, maxBuffer);
+  const blobs = new Map<string, string>();
+  let offset = 0;
+
+  while (offset < output.length) {
+    const headerEnd = output.indexOf(0x0a, offset);
+    if (headerEnd < 0) throw new Error("Invalid git cat-file response");
+
+    const header = output.subarray(offset, headerEnd).toString("ascii");
+    const [oid, type, sizeText] = header.split(" ");
+    const size = Number(sizeText);
+    if (!oid || type !== "blob" || !Number.isInteger(size)) {
+      throw new Error(`Invalid git cat-file header: ${header}`);
+    }
+
+    const contentStart = headerEnd + 1;
+    const contentEnd = contentStart + size;
+    if (contentEnd >= output.length) {
+      throw new Error(`Truncated git blob: ${oid}`);
+    }
+
+    blobs.set(oid, output.subarray(contentStart, contentEnd).toString("utf8"));
+    offset = contentEnd + 1;
+  }
+
+  return blobs;
+}
+
+export function visitCommitBlobs(
+  cwd: string,
+  files: SnapshotFile[],
+  visit: (oid: string, source: string) => void,
+): void {
+  for (const batch of chunkBlobs(files)) {
+    for (const [oid, source] of readBlobBatch(cwd, batch)) {
+      visit(oid, source);
+    }
+  }
+}
+
+export function visitWorktreeFiles(
+  cwd: string,
+  files: SnapshotFile[],
+  visit: (file: SnapshotFile, source: string) => void,
+): void {
+  for (const file of files) {
+    const full = resolve(cwd, file.path);
+    if (!isRegularFile(full)) continue;
+    visit(file, readFileSync(full, "utf8"));
+  }
+}
+
+export function readSnapshotFiles(
+  cwd: string,
+  snapshot: Snapshot,
+  files: SnapshotFile[],
+): Map<string, string> {
+  const sources = new Map<string, string>();
+
+  if (snapshot.kind === "worktree") {
+    visitWorktreeFiles(cwd, files, (file, source) => {
+      sources.set(file.path, source);
+    });
+    return sources;
+  }
+
+  const pathsByOid = new Map<string, string[]>();
+  for (const file of files) {
+    if (!file.oid) continue;
+    const paths = pathsByOid.get(file.oid) ?? [];
+    paths.push(file.path);
+    pathsByOid.set(file.oid, paths);
+  }
+  visitCommitBlobs(cwd, files, (oid, source) => {
+    for (const path of pathsByOid.get(oid) ?? []) {
+      sources.set(path, source);
+    }
+  });
+  return sources;
 }
 
 export function describeSnapshot(snapshot: Snapshot): string {

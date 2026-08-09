@@ -1,26 +1,29 @@
 import { buildCallTree, resolveEntry } from "./calltree.js";
-import { buildIndex, extractFunctions } from "./extract.js";
+import { buildIndex, extractCached } from "./extract.js";
 import {
   assertGitRepo,
   describeSnapshot,
-  listTsFiles,
-  readSnapshotFile,
+  listSnapshotFiles,
   resolveDiffSnapshotsAndPaths,
   resolveSnapshotAndPaths,
   verifyCommit,
+  visitCommitBlobs,
+  visitWorktreeFiles,
 } from "./git.js";
 import { diffEntry, inferEntries } from "./infer.js";
 import { findReachPaths } from "./reach.js";
 import { renderDiff, renderTree } from "./render.js";
+import type { ExtractionCache, FunctionIndex } from "./extract.js";
+import type { SnapshotFile } from "./git.js";
 import type {
   CallNode,
   DiffNode,
   DiffResult,
+  FunctionInfo,
   ReachResult,
   Snapshot,
   TreeResult,
 } from "./types.js";
-import type { FunctionIndex } from "./extract.js";
 
 export type DiffRunOptions = {
   from?: string;
@@ -62,20 +65,41 @@ function loadIndex(
   cwd: string,
   snapshot: Snapshot,
   pathFilters: string[],
+  cache: ExtractionCache = new Map(),
 ): FunctionIndex {
-  const files = listTsFiles(cwd, snapshot, pathFilters);
-  const all = [];
-  for (const file of files) {
-    const source = readSnapshotFile(cwd, snapshot, file);
-    if (source === null) continue;
+  const files = listSnapshotFiles(cwd, snapshot, pathFilters);
+  const extracted = new Map<string, FunctionInfo[]>();
+  const extract = (file: SnapshotFile, source: string): void => {
     try {
-      all.push(...extractFunctions(file, source));
+      extracted.set(file.path, extractCached(file.path, source, cache));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`warn: failed to parse ${file} @ ${snapshot.ref}: ${message}`);
+      console.error(
+        `warn: failed to parse ${file.path} @ ${snapshot.ref}: ${message}`,
+      );
     }
+  };
+
+  if (snapshot.kind === "worktree") {
+    visitWorktreeFiles(cwd, files, extract);
+  } else {
+    const filesByOid = new Map<string, SnapshotFile[]>();
+    for (const file of files) {
+      if (!file.oid) continue;
+      const matches = filesByOid.get(file.oid) ?? [];
+      matches.push(file);
+      filesByOid.set(file.oid, matches);
+    }
+    visitCommitBlobs(cwd, files, (oid, source) => {
+      for (const file of filesByOid.get(oid) ?? []) extract(file, source);
+    });
   }
-  return buildIndex(all);
+
+  const functions: FunctionInfo[] = [];
+  for (const file of files) {
+    functions.push(...(extracted.get(file.path) ?? []));
+  }
+  return buildIndex(functions);
 }
 
 function resolveEntries(index: FunctionIndex, explicit: string[]): string[] {
@@ -138,8 +162,10 @@ export function runDiff(options: DiffRunOptions = {}): DiffResult {
   if (from.kind === "commit") verifyCommit(cwd, from.ref);
   if (to.kind === "commit") verifyCommit(cwd, to.ref);
 
-  const before = loadIndex(cwd, from, resolvedPaths);
-  const after = loadIndex(cwd, to, resolvedPaths);
+  const extractionCache: ExtractionCache = new Map();
+  const before = loadIndex(cwd, from, resolvedPaths, extractionCache);
+  const after = loadIndex(cwd, to, resolvedPaths, extractionCache);
+  extractionCache.clear();
 
   const entries = inferEntries(before, after, entriesOpt, maxDepth);
 

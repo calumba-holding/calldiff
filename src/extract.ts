@@ -2,6 +2,7 @@
  * Multi-language extraction: detect by file extension, load grammar
  * (bundled or on-demand cache), parse, then run the language extractor.
  */
+import { createHash } from "node:crypto";
 import Parser from "tree-sitter";
 import type { CallStep, FunctionInfo } from "./types.js";
 import { loadGrammarPackage, resolveLanguage } from "./languages/grammars.js";
@@ -44,6 +45,30 @@ export function extractFunctions(
     const lines = linesFromOffsets(source, fn.start, fn.end);
     return { ...fn, ...lines };
   });
+}
+
+type CachedFunction = Omit<FunctionInfo, "file">;
+export type ExtractionCache = Map<string, CachedFunction[]>;
+
+export function extractCached(
+  file: string,
+  source: string,
+  cache: ExtractionCache,
+): FunctionInfo[] {
+  const extractor = detectLanguage(file);
+  if (!extractor) return [];
+
+  const digest = createHash("sha256").update(source).digest("hex");
+  const key = `${file}\0${extractor.id}\0${digest}`;
+  let functions = cache.get(key);
+
+  if (!functions) {
+    functions = extractFunctions(file, source).map(
+      ({ file: ignored, ...fn }) => fn,
+    );
+    cache.set(key, functions);
+  }
+  return functions.map((fn) => ({ ...fn, file }));
 }
 
 export type FunctionIndex = Map<string, FunctionInfo>;
