@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Cli, z } from "incur";
 import { runDiff, runReach, runTree } from "./run.js";
 import type { DiffResult, ReachResult, TreeResult } from "./types.js";
@@ -291,14 +291,23 @@ export const cli = Cli.create("calldiff", {
 
 export default cli;
 
-const isMain =
-  process.argv[1] !== undefined &&
-  (process.argv[1].endsWith("/cli.ts") ||
-    process.argv[1].endsWith("/cli.js") ||
-    process.argv[1].endsWith("\\cli.ts") ||
-    process.argv[1].endsWith("\\cli.js"));
+/** True when this file is the process entry (including npm `.bin` symlinks). */
+function executedAsCli(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return (
+      entry.endsWith("/cli.ts") ||
+      entry.endsWith("/cli.js") ||
+      entry.endsWith("\\cli.ts") ||
+      entry.endsWith("\\cli.js")
+    );
+  }
+}
 
-if (isMain) {
+if (executedAsCli()) {
   cli.serve(normalizeArgv(process.argv.slice(2))).catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
