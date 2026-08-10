@@ -1,17 +1,76 @@
 import type { FunctionIndex } from "./extract.js";
+import { flattenCallKeys } from "./extract.js";
 import { buildCallTree, resolveEntry } from "./calltree.js";
 import { diffTrees, treeHasChanges } from "./diff.js";
-import type { DiffNode } from "./types.js";
+import type { DiffNode, FunctionInfo } from "./types.js";
 
-function calleeSet(index: FunctionIndex, key: string, maxDepth: number): string {
-  const tree = buildCallTree(key, index, maxDepth);
-  const parts: string[] = [];
-  const walk = (node: typeof tree, depth: number) => {
-    parts.push(`${"  ".repeat(depth)}${node.key}`);
-    for (const child of node.children) walk(child, depth + 1);
-  };
-  walk(tree, 0);
-  return parts.join("\n");
+function functionShape(fn: FunctionInfo | undefined): string | null {
+  if (!fn) return null;
+  return JSON.stringify({ label: fn.label, steps: fn.steps });
+}
+
+function addReverseEdges(
+  reverse: Map<string, Set<string>>,
+  index: FunctionIndex,
+): void {
+  for (const [caller, fn] of index) {
+    for (const callee of flattenCallKeys(fn.steps)) {
+      let callers = reverse.get(callee);
+      if (!callers) {
+        callers = new Set();
+        reverse.set(callee, callers);
+      }
+      callers.add(caller);
+    }
+  }
+}
+
+function findAffected(
+  before: FunctionIndex,
+  after: FunctionIndex,
+  maxDepth: number,
+): Set<string> {
+  const keys = new Set([...before.keys(), ...after.keys()]);
+  const reverse = new Map<string, Set<string>>();
+  addReverseEdges(reverse, before);
+  addReverseEdges(reverse, after);
+
+  const distance = new Map<string, number>();
+  const queue: string[] = [];
+
+  for (const key of keys) {
+    if (functionShape(before.get(key)) === functionShape(after.get(key))) {
+      continue;
+    }
+    distance.set(key, 0);
+    queue.push(key);
+  }
+
+  for (let i = 0; i < queue.length; i += 1) {
+    const callee = queue[i]!;
+    const nextDistance = distance.get(callee)! + 1;
+    if (nextDistance > maxDepth) continue;
+
+    for (const caller of reverse.get(callee) ?? []) {
+      const previous = distance.get(caller);
+      if (previous !== undefined && previous <= nextDistance) continue;
+      distance.set(caller, nextDistance);
+      queue.push(caller);
+    }
+  }
+
+  return new Set(distance.keys());
+}
+
+function changedKeys(
+  keys: string[],
+  before: FunctionIndex,
+  after: FunctionIndex,
+  maxDepth: number,
+): string[] {
+  return keys
+    .filter((key) => diffEntry(key, before, after, maxDepth) !== null)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /**
@@ -25,55 +84,27 @@ export function inferEntries(
   maxDepth: number,
 ): string[] {
   if (explicit.length > 0) {
-    const resolved: string[] = [];
+    const entries: string[] = [];
     for (const entry of explicit) {
-      const fromBefore = resolveEntry(entry, before);
-      const fromAfter = resolveEntry(entry, after);
-      const key = fromAfter ?? fromBefore;
-      if (!key) {
-        throw new Error(`Entrypoint not found: ${entry}`);
-      }
-      if (!resolved.includes(key)) resolved.push(key);
+      const key = resolveEntry(entry, after) ?? resolveEntry(entry, before);
+      if (!key) throw new Error(`Entrypoint not found: ${entry}`);
+      if (!entries.includes(key)) entries.push(key);
     }
-    return resolved;
+    return entries;
   }
 
-  const keys = new Set([...before.keys(), ...after.keys()]);
-  const candidates: string[] = [];
+  const affected = [...findAffected(before, after, maxDepth)].filter(
+    (key) => !key.startsWith("new "),
+  );
+  const exported = affected.filter((key) =>
+    Boolean(before.get(key)?.exported || after.get(key)?.exported),
+  );
+  const entries = changedKeys(exported, before, after, maxDepth);
+  if (entries.length > 0) return entries;
 
-  for (const key of keys) {
-    // Skip synthetic `new X` aliases for inference listing (still resolvable)
-    if (key.startsWith("new ")) continue;
-
-    const b = before.get(key);
-    const a = after.get(key);
-
-    // Prefer exported / public-ish roots
-    const interesting = Boolean(b?.exported || a?.exported);
-    if (!interesting) continue;
-
-    const beforeTree = b ? calleeSet(before, key, maxDepth) : "";
-    const afterTree = a ? calleeSet(after, key, maxDepth) : "";
-
-    if (beforeTree !== afterTree) {
-      candidates.push(key);
-    }
-  }
-
-  // If nothing exported changed, fall back to any function with a differing tree
-  if (candidates.length === 0) {
-    for (const key of keys) {
-      if (key.startsWith("new ")) continue;
-      const beforeTree = before.has(key)
-        ? calleeSet(before, key, maxDepth)
-        : "";
-      const afterTree = after.has(key) ? calleeSet(after, key, maxDepth) : "";
-      if (beforeTree !== afterTree) candidates.push(key);
-    }
-  }
-
-  // Prefer shallower / shorter names first for stable output
-  return candidates.sort((a, b) => a.localeCompare(b));
+  const checked = new Set(exported);
+  const fallback = affected.filter((key) => !checked.has(key));
+  return changedKeys(fallback, before, after, maxDepth);
 }
 
 export function diffEntry(
