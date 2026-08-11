@@ -2,6 +2,78 @@ import { allFunctions, type FunctionIndex } from "./extract.js";
 import { pickLoc } from "./loc.js";
 import type { CallNode, CallStep, FunctionInfo } from "./types.js";
 
+/** Normalize user-facing paths for entry matching (`\` → `/`, strip `./`). */
+export function normalizeEntryPath(entry: string): string {
+  return entry.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+/** Unique source paths present in an index. */
+export function indexedFiles(index: FunctionIndex): string[] {
+  return [...new Set(allFunctions(index).map((fn) => fn.file))].sort();
+}
+
+/**
+ * Resolve which indexed source files match a `--file` argument.
+ * Exact path wins; otherwise a unique suffix match (`routes.ts` → `src/routes.ts`).
+ */
+export function matchEntrypointFiles(
+  entry: string,
+  files: Iterable<string>,
+): string[] {
+  const normalized = normalizeEntryPath(entry);
+  const unique = [...new Set(files)];
+  const exact = unique.filter((file) => file === normalized);
+  if (exact.length > 0) return exact.sort();
+  return unique
+    .filter(
+      (file) =>
+        file === normalized || file.endsWith(`/${normalized}`),
+    )
+    .sort();
+}
+
+/**
+ * Resolve a `--file` argument to a single indexed source path.
+ * Throws when missing or ambiguous.
+ */
+export function resolveEntrypointFile(
+  entry: string,
+  files: Iterable<string>,
+): string {
+  const matched = matchEntrypointFiles(entry, files);
+  if (matched.length === 0) {
+    throw new Error(`Entrypoint file not found: ${entry}`);
+  }
+  if (matched.length > 1) {
+    throw new Error(
+      `Ambiguous entrypoint file: ${entry} matches ${matched.join(", ")}. Use a more specific path.`,
+    );
+  }
+  return matched[0]!;
+}
+
+/** Exported definitions in a concrete source path. */
+export function exportsInFile(
+  file: string,
+  index: FunctionIndex,
+): FunctionInfo[] {
+  return sortDefinitions(
+    allFunctions(index).filter((fn) => fn.file === file && fn.exported),
+  );
+}
+
+/**
+ * Exported definitions for a `--file` argument against one index.
+ * Throws when the path is missing/ambiguous; returns [] when the file has no exports.
+ */
+export function resolveFileEntrypoints(
+  entry: string,
+  index: FunctionIndex,
+): FunctionInfo[] {
+  const file = resolveEntrypointFile(entry, indexedFiles(index));
+  return exportsInFile(file, index);
+}
+
 function displayCallLabel(
   key: string,
   index: FunctionIndex,

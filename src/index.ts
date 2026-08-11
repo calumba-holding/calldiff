@@ -1,5 +1,14 @@
 export { cli, normalizeArgv } from "./cli.js";
-export { buildCallTree, resolveAllEntries, resolveEntry } from "./calltree.js";
+export {
+  buildCallTree,
+  exportsInFile,
+  matchEntrypointFiles,
+  normalizeEntryPath,
+  resolveAllEntries,
+  resolveEntry,
+  resolveEntrypointFile,
+  resolveFileEntrypoints,
+} from "./calltree.js";
 export { diffTrees, treeHasChanges } from "./diff.js";
 export { allFunctions, buildIndex, extractFunctions } from "./extract.js";
 export { formatSourceLoc, pickLoc } from "./loc.js";
