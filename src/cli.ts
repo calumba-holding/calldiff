@@ -19,8 +19,31 @@ function readVersion(): string {
   }
 }
 
+const TOKEN_FLAGS = ["--token-count", "--token-limit", "--token-offset"];
+
+/**
+ * Whether the user asked incur to count or slice the output by tokens.
+ *
+ * These globals act on the value a command *returns*, so the ASCII fast path
+ * (which writes to stdout itself) has to opt out of them — otherwise the flags
+ * silently do nothing. See `emitAsciiOrData`.
+ */
+export function hasTokenFlag(argv: string[]): boolean {
+  return argv.some((token) =>
+    TOKEN_FLAGS.some((flag) => token === flag || token.startsWith(`${flag}=`)),
+  );
+}
+
+/**
+ * Set from the argv actually being served. incur does not pass the raw argv to
+ * command handlers, and `normalizeArgv` is the one funnel every entry point
+ * (the CLI below, and the tests) already runs argv through.
+ */
+let tokenFlagActive = false;
+
 /** Strip lone `--` so `calldiff a b -- src` still works with incur. */
 export function normalizeArgv(argv: string[]): string[] {
+  tokenFlagActive = hasTokenFlag(argv);
   return argv.filter((token) => token !== "--");
 }
 
@@ -50,6 +73,13 @@ type EmitContext = {
 /**
  * Default: classic ASCII (TTY + pipes) with optional CTAs.
  * `--format` / `--json`: structured envelope for agents.
+ *
+ * The ASCII path writes to stdout itself so that piped output stays raw text
+ * (incur wraps a scalar payload as `{ data, cta }` once a CTA is attached).
+ * `--token-count` / `--token-limit` / `--token-offset` act on what a command
+ * *returns*, though, so under those flags we hand the ASCII back to incur and
+ * let it do the counting and slicing. The CTA is dropped there on purpose: it
+ * keeps the counted output exactly the tree the user asked about.
  */
 function emitAsciiOrData(
   c: EmitContext,
@@ -57,6 +87,7 @@ function emitAsciiOrData(
   cta?: CtaMeta,
 ): unknown {
   if (!c.formatExplicit) {
+    if (tokenFlagActive) return result.ascii;
     process.stdout.write(
       result.ascii.endsWith("\n") ? result.ascii : `${result.ascii}\n`,
     );
