@@ -1,4 +1,9 @@
-import { allFunctions, type FunctionIndex } from "./extract.js";
+import {
+  allFunctions,
+  definitionsInFile,
+  fileScopedKey,
+  type FunctionIndex,
+} from "./extract.js";
 import { pickLoc } from "./loc.js";
 import type { CallNode, CallStep, FunctionInfo } from "./types.js";
 
@@ -74,6 +79,48 @@ export function resolveFileEntrypoints(
   return exportsInFile(file, index);
 }
 
+/** Is `fn` declared inside `owner`'s source span? */
+function declaredInside(fn: FunctionInfo, owner?: FunctionInfo): boolean {
+  if (!owner || fn.line == null || owner.line == null) return false;
+  return (
+    fn.line >= owner.line &&
+    (fn.endLine ?? fn.line) <= (owner.endLine ?? owner.line)
+  );
+}
+
+/**
+ * Resolve one call to a definition.
+ *
+ * A definition in the file the call was written in always wins: the bare-key
+ * map is global and first-wins, so without this a call resolves to whichever
+ * same-named function happened to be indexed first, grafting an unrelated body
+ * into the tree. See #19.
+ *
+ * Falls back to the global map, which is what callers across file boundaries
+ * (the common case) rely on.
+ */
+function resolveCall(
+  key: string,
+  index: FunctionIndex,
+  callSite?: { file?: string; line?: number },
+  owner?: FunctionInfo,
+): FunctionInfo | undefined {
+  const file = callSite?.file ?? owner?.file;
+  if (file) {
+    const candidates = definitionsInFile(index, file, key);
+    if (candidates.length === 1) return candidates[0];
+    if (candidates.length > 1) {
+      // One file declaring the name twice: a helper declared inside the calling
+      // function shadows that file's top-level definition.
+      const shadowing = candidates.find(
+        (fn) => fn.local && declaredInside(fn, owner),
+      );
+      return shadowing ?? candidates[0];
+    }
+  }
+  return index.get(key);
+}
+
 function displayCallLabel(
   key: string,
   index: FunctionIndex,
@@ -91,6 +138,8 @@ function expandSteps(
   depth: number,
   maxDepth: number,
   visiting: Set<string>,
+  /** Definition these steps were read from, used to scope call resolution. */
+  owner?: FunctionInfo,
 ): CallNode[] {
   return steps.map((step) => {
     if (step.type === "branch") {
@@ -105,6 +154,7 @@ function expandSteps(
           depth,
           maxDepth,
           visiting,
+          owner,
         ),
       };
     }
@@ -116,6 +166,8 @@ function expandSteps(
       visiting,
       step.children,
       step,
+      undefined,
+      owner,
     );
   });
 }
@@ -130,9 +182,15 @@ function expandCall(
   callSite?: { file?: string; line?: number; endLine?: number },
   /** When set, expand this body even if another definition owns the bare key. */
   infoOverride?: FunctionInfo,
+  /** Definition this call was read from, used to scope call resolution. */
+  owner?: FunctionInfo,
 ): CallNode {
-  const info = infoOverride ?? index.get(key);
+  const info = infoOverride ?? resolveCall(key, index, callSite, owner);
   const label = displayCallLabel(key, index, info);
+
+  // Recursion is per definition, not per name: two same-named functions in
+  // different files calling each other is not a cycle.
+  const token = info ? fileScopedKey(info.file, info.key) : key;
 
   // Root uses the definition start line; every other node uses the call-site in the parent.
   const loc =
@@ -148,10 +206,10 @@ function expandCall(
     return { key, label, kind: "call", ...loc, children: [] };
   }
 
-  if (info && visiting.has(key)) {
+  if (info && visiting.has(token)) {
     // Still expand call-site JSX children; they are not a re-entry into `key`'s body.
     const callSiteChildren = inlineChildren?.length
-      ? expandSteps(inlineChildren, index, depth + 1, maxDepth, visiting)
+      ? expandSteps(inlineChildren, index, depth + 1, maxDepth, visiting, owner)
       : [];
     return {
       key,
@@ -162,14 +220,14 @@ function expandCall(
     };
   }
 
-  if (info) visiting.add(key);
+  if (info) visiting.add(token);
   const bodyChildren = info
-    ? expandSteps(info.steps, index, depth + 1, maxDepth, visiting)
+    ? expandSteps(info.steps, index, depth + 1, maxDepth, visiting, info)
     : [];
   const callSiteChildren = inlineChildren?.length
-    ? expandSteps(inlineChildren, index, depth + 1, maxDepth, visiting)
+    ? expandSteps(inlineChildren, index, depth + 1, maxDepth, visiting, owner)
     : [];
-  if (info) visiting.delete(key);
+  if (info) visiting.delete(token);
 
   return {
     key,

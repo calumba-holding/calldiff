@@ -79,6 +79,17 @@ export type FunctionIndex = Map<string, FunctionInfo>;
  */
 const indexDefinitions = new WeakMap<FunctionIndex, FunctionInfo[]>();
 
+/**
+ * Definitions grouped by `file\0key`, so a call can be resolved against the
+ * file it was written in instead of the global bare-key map. See #19.
+ */
+const indexByFile = new WeakMap<FunctionIndex, Map<string, FunctionInfo[]>>();
+
+/** NUL cannot occur in a path or a symbol key, so it is a safe separator. */
+export function fileScopedKey(file: string, key: string): string {
+  return `${file}\0${key}`;
+}
+
 export function flattenCallKeys(steps: CallStep[]): string[] {
   const keys: string[] = [];
   const walk = (list: CallStep[]) => {
@@ -103,20 +114,58 @@ export function allFunctions(index: FunctionIndex): FunctionInfo[] {
   return indexDefinitions.get(index) ?? [...index.values()];
 }
 
+/**
+ * Definitions of `key` declared in `file`, top-level before locals, then in
+ * source order. Empty when that file declares none.
+ *
+ * Indexes created as plain Maps (not via {@link buildIndex}) fall back to a
+ * scan of their values.
+ */
+export function definitionsInFile(
+  index: FunctionIndex,
+  file: string,
+  key: string,
+): FunctionInfo[] {
+  const byFile = indexByFile.get(index);
+  if (byFile) return byFile.get(fileScopedKey(file, key)) ?? [];
+  return [...index.values()].filter(
+    (fn) => fn.file === file && fn.key === key,
+  );
+}
+
 export function buildIndex(functions: FunctionInfo[]): FunctionIndex {
   const index: FunctionIndex = new Map();
-  for (const fn of functions) {
+  const byFile = new Map<string, FunctionInfo[]>();
+
+  const record = (fn: FunctionInfo) => {
+    const scoped = fileScopedKey(fn.file, fn.key);
+    const existing = byFile.get(scoped);
+    if (existing) existing.push(fn);
+    else byFile.set(scoped, [fn]);
+
     if (!index.has(fn.key)) {
       index.set(fn.key, fn);
     }
     if (fn.key.endsWith(".constructor")) {
       const className = fn.key.slice(0, -".constructor".length);
       const newKey = `new ${className}`;
+      const ctor = { ...fn, key: newKey, label: `new ${className}()` };
+      const scopedNew = fileScopedKey(fn.file, newKey);
+      const existingNew = byFile.get(scopedNew);
+      if (existingNew) existingNew.push(ctor);
+      else byFile.set(scopedNew, [ctor]);
       if (!index.has(newKey)) {
-        index.set(newKey, { ...fn, key: newKey, label: `new ${className}()` });
+        index.set(newKey, ctor);
       }
     }
-  }
+  };
+
+  // Top level first: a helper declared inside a body must never take a bare key
+  // away from a real top-level definition somewhere else in the repo (#19).
+  for (const fn of functions) if (!fn.local) record(fn);
+  for (const fn of functions) if (fn.local) record(fn);
+
   indexDefinitions.set(index, functions.slice());
+  indexByFile.set(index, byFile);
   return index;
 }

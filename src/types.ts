@@ -70,6 +70,12 @@ export interface FunctionInfo {
   /** Ordered body steps (calls + if/else branches) */
   steps: CallStep[];
   exported: boolean;
+  /**
+   * Declared inside another function body (a helper or closure) rather than at
+   * file top level. Locals only answer calls made from their own file, so a
+   * helper never shadows a top-level definition elsewhere in the repo.
+   */
+  local?: boolean;
   /** Source span for change detection */
   start: number;
   end: number;

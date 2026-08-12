@@ -345,6 +345,80 @@ function functionFromParts(
   };
 }
 
+/**
+ * Register definitions declared inside a function body.
+ *
+ * `visitStatement` only walks top-level statements, so a helper declared inside
+ * a body was never indexed at all, and calls to it fell through to whatever
+ * top-level function elsewhere in the repo happened to share the bare name.
+ * See #19.
+ *
+ * Helper bodies are still not attributed to the outer caller (contract #5);
+ * they become definitions in their own right, marked `local`.
+ */
+function collectLocalDefinitions(
+  file: string,
+  body: SyntaxNode | null,
+  className: string | null,
+  functions: FunctionInfo[],
+) {
+  if (!body) return;
+
+  const walk = (node: SyntaxNode): void => {
+    for (const child of namedChildren(node)) {
+      if (
+        child.type === "function_declaration" ||
+        child.type === "generator_function_declaration"
+      ) {
+        const id = childByType(child, "identifier");
+        handleFunctionNode(
+          file,
+          child,
+          id?.text ?? null,
+          false,
+          className,
+          functions,
+          true,
+        );
+        continue;
+      }
+
+      if (
+        child.type === "lexical_declaration" ||
+        child.type === "variable_declaration"
+      ) {
+        for (const d of namedChildren(child)) {
+          if (d.type !== "variable_declarator") continue;
+          const id = childByType(d, "identifier");
+          const init =
+            childByType(d, "arrow_function") ??
+            childByType(d, "function_expression");
+          if (id && init) {
+            handleFunctionNode(
+              file,
+              init,
+              id.text,
+              false,
+              className,
+              functions,
+              true,
+            );
+          }
+        }
+        // Fall through: `walk` skips the initializer bodies as fn-like below,
+        // so a declaration list is never registered twice.
+      }
+
+      // Anonymous callbacks are not addressable by name; skip their bodies.
+      if (isFnLike(child.type)) continue;
+
+      walk(child);
+    }
+  };
+
+  walk(body);
+}
+
 function handleFunctionNode(
   file: string,
   node: SyntaxNode,
@@ -352,9 +426,11 @@ function handleFunctionNode(
   exported: boolean,
   className: string | null,
   functions: FunctionInfo[],
+  /** Declared inside another body: key stays bare and resolution is file-scoped. */
+  local = false,
 ) {
   if (!name) return;
-  const key = className ? `${className}.${name}` : name;
+  const key = className && !local ? `${className}.${name}` : name;
   const params = childByType(node, "formal_parameters");
   const body =
     childByType(node, "statement_block") ??
@@ -370,19 +446,19 @@ function handleFunctionNode(
     ) ??
     null;
 
-  functions.push(
-    functionFromParts(
-      file,
-      key,
-      key,
-      params,
-      body,
-      exported,
-      node.startIndex,
-      node.endIndex,
-      className,
-    ),
+  const info = functionFromParts(
+    file,
+    key,
+    key,
+    params,
+    body,
+    exported,
+    node.startIndex,
+    node.endIndex,
+    className,
   );
+  functions.push(local ? { ...info, local: true } : info);
+  collectLocalDefinitions(file, body, className, functions);
 }
 
 function handleClass(
@@ -432,6 +508,7 @@ function handleClass(
           className,
         ),
       );
+      collectLocalDefinitions(file, fnBody, className, functions);
     }
 
     if (element.type === "public_field_definition") {

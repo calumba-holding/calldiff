@@ -10,7 +10,12 @@ export {
   resolveFileEntrypoints,
 } from "./calltree.js";
 export { diffTrees, treeHasChanges } from "./diff.js";
-export { allFunctions, buildIndex, extractFunctions } from "./extract.js";
+export {
+  allFunctions,
+  buildIndex,
+  definitionsInFile,
+  extractFunctions,
+} from "./extract.js";
 export { formatSourceLoc, pickLoc } from "./loc.js";
 export { collectPathsTo, findReachPaths, pathToTree } from "./reach.js";
 export { renderDiff, renderTree } from "./render.js";
