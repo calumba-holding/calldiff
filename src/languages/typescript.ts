@@ -345,6 +345,143 @@ function functionFromParts(
   };
 }
 
+const TRANSPARENT_EXPRESSIONS = new Set([
+  "parenthesized_expression",
+  "as_expression",
+  "satisfies_expression",
+  "non_null_expression",
+  "type_assertion",
+]);
+
+/**
+ * Peel the wrappers TypeScript allows around a value — `(fn)`, `fn as Handler`,
+ * `fn satisfies Handler`, `<Handler>fn`, `fn!` — so the node underneath can be
+ * matched on its own terms. In every one of these the value is the first named
+ * child, except `<T>fn`, where the leading `type_arguments` comes first.
+ */
+function stripTypeWrappers(node: SyntaxNode): SyntaxNode {
+  let current = node;
+  while (TRANSPARENT_EXPRESSIONS.has(current.type)) {
+    const inner = namedChildren(current).find(
+      (c) => c.type !== "type_arguments",
+    );
+    if (!inner) return current;
+    current = inner;
+  }
+  return current;
+}
+
+/**
+ * `export default defineEventHandler(async (event) => {...})` — the module's
+ * payload is a function argument to a wrapper call, not a declaration. Extract
+ * it, keyed by its own name where it has one and by `fallbackName` otherwise:
+ * the declared variable for `const handler = wrapper(...)`, the file stem for a
+ * default export, so routes in different files do not collide.
+ *
+ * Returns whether a function was found, so a nested call that holds none —
+ * `createHandler(makeOptions(), async () => {...})` — does not stop the scan
+ * before the sibling argument that does.
+ */
+function unwrapWrappedFunction(
+  file: string,
+  call: SyntaxNode,
+  fallbackName: string | null,
+  exported: boolean,
+  functions: FunctionInfo[],
+  className: string | null = null,
+  local = false,
+): boolean {
+  const args = namedChildren(call).find((c) => c.type === "arguments");
+  if (!args) return false;
+  for (const rawArg of namedChildren(args)) {
+    const arg = stripTypeWrappers(rawArg);
+    // Wrappers compose: `memo(forwardRef(function Input() {...}))`.
+    if (arg.type === "call_expression") {
+      if (
+        unwrapWrappedFunction(
+          file,
+          arg,
+          fallbackName,
+          exported,
+          functions,
+          className,
+          local,
+        )
+      ) {
+        return true;
+      }
+      continue;
+    }
+    // Generators count too: `Effect.gen(function* () {...})` is this shape.
+    if (arg.type === "method_definition" || !isFnLike(arg.type)) continue;
+    const named = childByType(arg, "identifier");
+    handleFunctionNode(
+      file,
+      arg,
+      named?.text ?? fallbackName,
+      exported,
+      className,
+      functions,
+      local,
+    );
+    return true;
+  }
+  return false;
+}
+
+/** File path minus extension — the key for an anonymous default export. */
+function fileStem(file: string): string {
+  return file.replace(/\.[^./]+$/, "");
+}
+
+/**
+ * Extract a function from a variable declarator's initialiser: a direct
+ * arrow/function expression, or a function argument to a wrapper call.
+ */
+function extractDeclaratorFunction(
+  file: string,
+  d: SyntaxNode,
+  exported: boolean,
+  functions: FunctionInfo[],
+  className: string | null = null,
+  local = false,
+): void {
+  const id = childByType(d, "identifier");
+  if (!id) return;
+  // The initialiser is the declarator's value child — everything but the
+  // name and any type annotation — with its type wrappers peeled off.
+  const value = namedChildren(d).find(
+    (c) => c !== id && c.type !== "type_annotation",
+  );
+  const init = value ? stripTypeWrappers(value) : null;
+  if (!init) return;
+  if (init.type === "arrow_function" || init.type === "function_expression") {
+    handleFunctionNode(
+      file,
+      init,
+      id.text,
+      exported,
+      className,
+      functions,
+      local,
+    );
+    return;
+  }
+  // `const handler = defineEventHandler(async (event) => {...})` — the
+  // initialiser is the wrapper call, so the function is one level in.
+  if (init.type === "call_expression") {
+    unwrapWrappedFunction(
+      file,
+      init,
+      id.text,
+      exported,
+      functions,
+      className,
+      local,
+    );
+  }
+}
+
 /**
  * Register definitions declared inside a function body.
  *
@@ -389,21 +526,14 @@ function collectLocalDefinitions(
       ) {
         for (const d of namedChildren(child)) {
           if (d.type !== "variable_declarator") continue;
-          const id = childByType(d, "identifier");
-          const init =
-            childByType(d, "arrow_function") ??
-            childByType(d, "function_expression");
-          if (id && init) {
-            handleFunctionNode(
-              file,
-              init,
-              id.text,
-              false,
-              className,
-              functions,
-              true,
-            );
-          }
+          extractDeclaratorFunction(
+            file,
+            d,
+            false,
+            functions,
+            className,
+            true,
+          );
         }
         // Fall through: `walk` skips the initializer bodies as fn-like below,
         // so a declaration list is never registered twice.
@@ -537,9 +667,10 @@ function visitStatement(
   functions: FunctionInfo[],
 ) {
   if (node.type === "export_statement") {
-    const decl =
+    const found =
       namedChildren(node).find((c) => c.type !== "export_clause") ?? null;
-    if (!decl) return;
+    if (!found) return;
+    const decl = stripTypeWrappers(found);
 
     const isDefault = node.text.startsWith("export default");
 
@@ -571,6 +702,16 @@ function visitStatement(
       decl.type === "class"
     ) {
       handleClass(file, decl, true, functions);
+      return;
+    }
+    if (decl.type === "call_expression") {
+      unwrapWrappedFunction(
+        file,
+        decl,
+        isDefault ? fileStem(file) : null,
+        true,
+        functions,
+      );
       return;
     }
     if (
@@ -605,13 +746,7 @@ function visitStatement(
   ) {
     for (const d of namedChildren(node)) {
       if (d.type !== "variable_declarator") continue;
-      const id = childByType(d, "identifier");
-      const init =
-        childByType(d, "arrow_function") ??
-        childByType(d, "function_expression");
-      if (id && init) {
-        handleFunctionNode(file, init, id.text, exported, null, functions);
-      }
+      extractDeclaratorFunction(file, d, exported, functions);
     }
   }
 }
