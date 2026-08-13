@@ -248,3 +248,112 @@ test("kotlin: companion object and object methods", ({ expectCallstack }) => {
     +    └─ more()
   `);
 });
+
+test("kotlin: trailing-lambda body nests under the receiving call", ({
+  expectCallstack,
+}) => {
+  expectCallstack(
+    `
+    + fun outer() {
+    +   runBlocking {
+    +     work()
+    +   }
+    + }
+      fun work() {}
+    `,
+    "outer",
+    { file: "lambda.kt" },
+  ).toEqual(`
+      outer()
+    + └─ runBlocking()
+    +    └─ work()
+  `);
+});
+
+test("kotlin: nested trailing lambdas nest transitively", ({
+  expectCallstack,
+}) => {
+  expectCallstack(
+    `
+    + fun outer() {
+    +   wrap {
+    +     use {
+    +       work()
+    +     }
+    +   }
+    + }
+      fun work() {}
+    `,
+    "outer",
+    { file: "nested-lambda.kt" },
+  ).toEqual(`
+      outer()
+    + └─ wrap()
+    +    └─ use()
+    +       └─ work()
+  `);
+});
+
+test("kotlin: parenthesized lambda argument nests under the call", ({
+  expectCallstack,
+}) => {
+  expectCallstack(
+    `
+    + fun outer() {
+    +   submit(3, { work() })
+    + }
+      fun work() {}
+    `,
+    "outer",
+    { file: "paren-lambda.kt" },
+  ).toEqual(`
+      outer()
+    + └─ submit()
+    +    └─ work()
+  `);
+});
+
+test("kotlin: call added inside an existing lambda diffs as an added child", ({
+  expectCallstack,
+}) => {
+  expectCallstack(
+    `
+      fun outer() {
+        runBlocking {
+          work()
+    +     extra()
+        }
+      }
+      fun work() {}
+    + fun extra() {}
+    `,
+    "outer",
+    { file: "lambda-diff.kt" },
+  ).toEqual(`
+      outer()
+      └─ runBlocking()
+         ├─ work()
+    +    └─ extra()
+  `);
+});
+
+test("kotlin: args plus trailing lambda keeps the call and nests the body", ({
+  expectCallstack,
+}) => {
+  expectCallstack(
+    `
+    + fun outer(roots: List<String>) {
+    +   store.read(roots) { row ->
+    +     handle(row)
+    +   }
+    + }
+      fun handle(row: String) {}
+    `,
+    "outer",
+    { file: "args-lambda.kt" },
+  ).toEqual(`
+      outer(roots)
+    + └─ store.read()
+    +    └─ handle(row)
+  `);
+});
