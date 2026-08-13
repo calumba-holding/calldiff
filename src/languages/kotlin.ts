@@ -77,6 +77,19 @@ function statementsOf(body: SyntaxNode | null): SyntaxNode[] {
   return [body];
 }
 
+/**
+ * Body statements of a lambda/anonymous-function argument. Kotlin higher-order
+ * calls (`runBlocking { ... }`, `use { ... }`) execute these as part of the
+ * enclosing call flow, so they nest as call-site children of the receiving call.
+ */
+function lambdaBodyStatements(lambda: SyntaxNode): SyntaxNode[] {
+  if (lambda.type === "anonymous_function") {
+    return statementsOf(childByType(lambda, "function_body"));
+  }
+  const stmts = childByType(lambda, "statements");
+  return stmts ? namedChildren(stmts) : [];
+}
+
 function collectStatements(
   file: string,
   statements: SyntaxNode[],
@@ -85,11 +98,26 @@ function collectStatements(
   const steps: CallStep[] = [];
   const seen = new Set<string>();
 
-  const addCall = (key: string, node: SyntaxNode) => {
+  const addCall = (key: string, node: SyntaxNode, children?: CallStep[]) => {
     const mark = `${key}:${node.startIndex}`;
     if (seen.has(mark)) return;
     seen.add(mark);
-    steps.push({ type: "call", key, ...locFromNode(file, node) });
+    steps.push({
+      type: "call",
+      key,
+      ...locFromNode(file, node),
+      ...(children && children.length > 0 ? { children } : {}),
+    });
+  };
+
+  // Lambda arguments of THIS call only — lambdas under a nested call belong to it.
+  const findLambdaArgs = (node: SyntaxNode, into: SyntaxNode[]): void => {
+    if (node.type === "call_expression") return;
+    if (node.type === "lambda_literal" || node.type === "anonymous_function") {
+      into.push(node);
+      return;
+    }
+    for (const child of namedChildren(node)) findLambdaArgs(child, into);
   };
 
   const pushIfChain = (node: SyntaxNode, asElseIf: boolean): void => {
@@ -225,12 +253,28 @@ function collectStatements(
     }
 
     if (node.type === "call_expression") {
-      const callee = node.namedChild(0);
+      // `f(args) { lambda }` parses as call_expression(call_expression(f, args), lambda):
+      // unwrap to the innermost callee, keeping every suffix level's arguments.
+      const argSubtrees: SyntaxNode[] = [...namedChildren(node).slice(1)];
+      let callee = node.namedChild(0);
+      while (callee?.type === "call_expression") {
+        argSubtrees.push(...namedChildren(callee).slice(1));
+        callee = callee.namedChild(0);
+      }
       if (callee) {
         const key = calleeKey(callee, className);
-        if (key) addCall(key, node);
+        if (key) {
+          const lambdas: SyntaxNode[] = [];
+          for (const subtree of argSubtrees) findLambdaArgs(subtree, lambdas);
+          const children = lambdas.flatMap((lambda) =>
+            collectStatements(file, lambdaBodyStatements(lambda), className),
+          );
+          addCall(key, node, children);
+        }
       }
-      for (const child of namedChildren(node).slice(1)) walk(child);
+      // Nested calls in arguments stay siblings; lambda bodies were claimed
+      // above and `walk` still skips lambda nodes, so nothing double-counts.
+      for (const subtree of argSubtrees) walk(subtree);
       return;
     }
 
